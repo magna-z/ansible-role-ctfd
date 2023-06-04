@@ -1,0 +1,96 @@
+---
+- name: check mandatory variables
+  ansible.builtin.assert:
+    that:
+      - ctfd_secret_key is defined
+    quiet: true
+
+- name: ensure work directories
+  ansible.builtin.file:
+    state: directory
+    path: "{{ item }}"
+    owner: nobody
+    group: nogroup
+    mode: 0750
+  with_items: [/var/lib/ctfd, /var/log/ctfd]
+
+- name: database migrate
+  community.docker.docker_container:
+    detach: false
+    cleanup: true
+    network_mode: "{{ ctfd_docker_network }}"
+    log_driver: json-file
+    name: ctfd-database-migrate
+    env: "{{ ctfd_docker_envs }}"
+    entrypoint: python
+    command: manage.py db upgrade
+    image: "{{ ctfd_docker_image }}"
+    user: nobody:nogroup
+
+- name: ensure systemd ctfd.service
+  notify: restart service ctfd
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/ctfd.service
+    owner: root
+    group: root
+    mode: 0644
+    content: |
+      [Unit]
+      Requires=docker.service
+      After=docker.service
+      StartLimitIntervalSec=0
+      [Service]
+      ExecStartPre=-/usr/bin/docker rm --force %N
+      ExecStart=/usr/bin/docker run \
+        --name=%N \
+        --rm=true \
+        --pid=host \
+        --log-driver=none \
+        --stop-timeout=30 \
+        --user=nobody:nogroup \
+        --network={{ ctfd_docker_network }} \
+        {% if ctfd_docker_network != 'host' -%}
+        {% for publish in ctfd_docker_publish_ports -%}
+        --publish={{ publish }} \
+        {% endfor -%}
+        {% endif -%}
+        {% if ctfd_docker_labels | length > 0 %}{% for key, value in ctfd_docker_labels.items() -%}
+        --label={{ key }}="{{ value }}" \
+        {% endfor %}{% endif -%}
+        {% if ctfd_docker_envs | length > 0 %}{% for key, value in ctfd_docker_envs.items() -%}
+        --env={{ key }}="{{ value }}" \
+        {% endfor %}{% endif -%}
+        --env=LOG_FOLDER=/var/log/ctfd \
+        --env=SECRET_KEY={{ ctfd_secret_key }} \
+        --volume=/etc/localtime:/etc/localtime:ro \
+        --volume=/etc/timezone:/etc/timezone:ro \
+        --volume=/etc/ssl/certs:/etc/ssl/certs:ro \
+        --volume=/usr/local/share/ca-certificates:/usr/local/share/ca-certificates:ro \
+        --volume=/var/lib/ctfd:/var/lib/ctfd:rw \
+        --volume=/var/log/ctfd:/var/log/ctfd:rw \
+        --entrypoint=gunicorn \
+        {{ ctfd_docker_image }} \
+          'CTFd:create_app()' \
+          --bind="{{ ctfd_gunicorn_bind_addr }}" \
+          --workers="{{ ctfd_gunicorn_workers }}" \
+          --worker-tmp-dir="/dev/shm" \
+          --worker-class="gevent" \
+          --access-logfile="-" \
+          --error-logfile="-" \
+          --log-level="{{ ctfd_gunicorn_log_level }}"
+      ExecStop=/usr/bin/docker stop %N
+      Restart=always
+      RestartSec=10
+      KillMode=process
+      [Install]
+      WantedBy=multi-user.target
+
+- name: execute handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: start service ctfd
+  ansible.builtin.systemd:
+    name: ctfd
+    daemon_reload: true
+    enabled: true
+    state: started

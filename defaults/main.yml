@@ -1,0 +1,12 @@
+---
+ctfd_docker_image: ctfd/ctfd:latest
+
+ctfd_docker_network: bridge
+ctfd_docker_publish_ports: []
+
+ctfd_docker_envs: []
+ctfd_docker_labels: []
+
+ctfd_gunicorn_workers: 2
+ctfd_gunicorn_bind_addr: :8000
+ctfd_gunicorn_log_level: error

@@ -1,0 +1,7 @@
+---
+- name: restart service ctfd
+  ansible.builtin.systemd:
+    name: ctfd
+    daemon_reload: true
+    enabled: true
+    state: restarted
